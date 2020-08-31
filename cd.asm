@@ -3,12 +3,6 @@
 ; +++++++++++++++++++++++++++++++++++++++++++
 ; |        微机原理和接口技术 综合设计        |
 ; +++++++++++++++++++++++++++++++++++++++++++
-; 
-;   ----- 作者信息 -----
-;       姓名：刘佳城
-;       班级：电科8班
-;       学号：20182334018
-;       分组小组：J组
 ;
 ;   ----- 软件功能 -----
 ;   配套唐都仪器TD-PITE实验环境，实现一个简易电子钟程序。
@@ -120,7 +114,15 @@ freq_table  dw      000
             ;db    000, 525, 589, 661, 700, 786, 882, 990
             
 ; 数码管缓存，6位数码管
-seg_data    db  6 dup(00h)
+seg_data    db  6 dup(00h)      
+; 显示分配：
+;   当前模式（1 演奏模式 2 录音模式 3 播放模式）
+;   不显示
+;   当前音阶
+;   当前音区
+;   当前音调
+;   不显示
+
 
 ; 数码管刷新周期倒数
 seg_refresh_duty_count  db  00h
@@ -134,6 +136,10 @@ key_status_last         db  00h
 
 ; systick时间
 systick_time            dw  00h
+
+; 音区存储
+; 音调存储
+; 音阶存储
 
 data    ends
 
@@ -188,6 +194,8 @@ FPP:
 
     ; 按键事件处理 ----------------------------------
 
+    ; 按键处理程序中，bx可任意更改
+
         test    bl, 01h
         jnz     main_cond_keyevent_last_pressed:
 
@@ -214,6 +222,9 @@ FPP:
                 jmp     main_cond_keyevent_last_end
 
         main_cond_keyevent_last_end:
+
+        ; 键盘扫描后续处理
+        call    keyscan_next_hook
 
 
 LPP:    NOP
@@ -484,34 +495,34 @@ keyscan_get_column_loop_end:
 keyscan_get_column endp
 
 ; 键盘扫描-获取当前列数据 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-keyscan_get_column_2 proc
-        mov     dx, M8255_C
-        in      al, dx
+; keyscan_get_column_2 proc
+;         mov     dx, M8255_C
+;         in      al, dx
 
-        test    al, 01h
-        jnz     L2
-        mov     al, 00h
-        jmp     keyscan_get_column_return
+;         cmp     al, 01h
+;         jnz     L2
+;         mov     al, 00h
+;         jmp     keyscan_get_column_return
 
-L2:     test    al, 02h
-        jnz     L3
-        mov     al, 10h
-        jmp     keyscan_get_column_return
+; L2:     cmp     al, 02h
+;         jnz     L3
+;         mov     al, 10h
+;         jmp     keyscan_get_column_return
 
-L3:     test    al, 04h
-        jnz     L4
-        mov     al, 20h
-        jmp     keyscan_get_column_return
+; L3:     cmp     al, 04h
+;         jnz     L4
+;         mov     al, 20h
+;         jmp     keyscan_get_column_return
 
-L4:     test    al, 08h
-        jnz     keyscan_get_column_notfound
-        mov     al, 40h
+; L4:     cmp     al, 08h
+;         jnz     keyscan_get_column_notfound
+;         mov     al, 40h
 
-keyscan_get_column_notfound:
+; keyscan_get_column_notfound:
 
-keyscan_get_column_return:
-        ret
-keyscan_get_column_2 endp
+; keyscan_get_column_return:
+;         ret
+; keyscan_get_column_2 endp
 
 
 ; 键盘扫描子程序 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -737,33 +748,124 @@ beep_set_tone endp
 ; S3.2.5 ------ 按键处理 ------
 
 ; 按键按下程序
+keyevent_handler_pressed proc
+        call    mod_piano_pressed
+        call    mod_recorder_pressed
+        call    mod_player_pressed
+        ret
+keyevent_handler_pressed endp
 
 ; 按键弹起程序
+keyevent_handler_released proc
+        call    mod_piano_released
+        call    mod_recorder_released
+        ret
+keyevent_handler_released endp
 
 ; 按键保持程序
 
-; 按键空闲程序
+keyevent_handler_hold proc
+        ret
+keyevent_handler_hold endp
 
-; 弹奏程序
+; 按键空闲程序
+keyevent_handler_idle proc
+        call    mod_player_pressed
+        ret
+keyevent_handler_idle endp
+
+; 键盘扫描后续处理
+keyscan_next_hook proc
+        ; 更新数码管：当前模式
+keyscan_next_hook endp
 
 
 ; S3.2.6 ------ 演奏程序 ------
 
 ; 演奏程序-按键按下事件hook
+mod_piano_pressed proc
+
+    ; 为音调按键
+
+        ; 更新数码管显示
+
+        ; 驱动蜂鸣器发声
+        mov     ah, 1
+        call    beep_enable
+
+    ; 为音区音阶调节按键
+
+        ; 更新数码管显示
+
+        ret
+mod_piano_pressed endp
 
 ; 演奏程序-按键弹起事件hook
+mod_piano_released proc
+
+        ; 关闭蜂鸣器
+        call    beep_disable
+
+        ret
+mod_piano_released endp
 
 ; 录音程序-按键按下事件hook
+mod_recorder_pressed proc
+
+    ; 为音调按键
+        ; 计算上一音调弹起延时
+            ; 上一音调弹起延时=此时时间-缓存时间
+
+        ; 记录此音阶音区音调
+        ; 缓存当前时间
+
+    ; 为录音功能按键
+
+        ret
+mod_recorder_pressed endp
 
 ; 录音程序-按键弹起事件hook
+mod_recorder_released proc
+    
+    ; 为音调按键
+
+        ; 计算上一音调按下延时
+
+        ; 记录此音调弹起时间
+
+        ret
+mod_recorder_released endp
 
 ; 播放程序-按键按下事件hook
+mod_player_pressed proc
+
+        ; 判断按键是否为播放键
+
+        ; 如果是播放按键
+        
+            ; 判断当前状态是否为播放状态
+
+            ; 是播放状态
+
+                ; 停止播放（设置状态=演奏）
+
+            ; 不是播放状态
+
+                ; 开始播放（设置状态=播放）
+
+        ; 如果不是播放按键
+
+        ret
+mod_player_pressed endp
 
 ; 播放程序-按键空闲事件hook
+mod_player_idle proc
+        ret
+mod_player_idle endp
 
 ; S3.2.7 ------ 中断处理 ------
 
-; MIR7 中断处理程序 ==============================================Probe
+; MIR7 中断处理程序
 mir7_handler proc
         cli
 
@@ -779,8 +881,8 @@ mir7_handler proc
         ; SEG 处理
         mov     al, seg_refresh_duty_count
         inc     al
-        test    al, SEG_SRV_DUTY            ; 当前=预设分频?
-        jnz     seg_refresh_duty_cond_true
+        cmp     al, SEG_SRV_DUTY            ; 当前=预设分频?
+        jz      seg_refresh_duty_cond_true
 seg_refresh_duty_cond_false:                ; 不等于，分频计数+1
         inc     al
         mov     seg_refresh_duty_count, al
