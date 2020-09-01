@@ -494,36 +494,6 @@ keyscan_get_column_loop_end:
         ret
 keyscan_get_column endp
 
-; 键盘扫描-获取当前列数据 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-; keyscan_get_column_2 proc
-;         mov     dx, M8255_C
-;         in      al, dx
-
-;         cmp     al, 01h
-;         jnz     L2
-;         mov     al, 00h
-;         jmp     keyscan_get_column_return
-
-; L2:     cmp     al, 02h
-;         jnz     L3
-;         mov     al, 10h
-;         jmp     keyscan_get_column_return
-
-; L3:     cmp     al, 04h
-;         jnz     L4
-;         mov     al, 20h
-;         jmp     keyscan_get_column_return
-
-; L4:     cmp     al, 08h
-;         jnz     keyscan_get_column_notfound
-;         mov     al, 40h
-
-; keyscan_get_column_notfound:
-
-; keyscan_get_column_return:
-;         ret
-; keyscan_get_column_2 endp
-
 
 ; 键盘扫描子程序 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 ; 传出：al 按键值
@@ -555,18 +525,14 @@ keyscan_get_key_loop_end:
         jz      keyscan_get_key_cond_err    ; CX=0，未扫描到按键
 ; 成功扫描到按键
         ; 当前 bx=第几列 cx=第几行
-        ; 计算按键值=(cx-1)*4+(5-bx)
-        sub     cl, 0001h       ; cl <- cl-1
-        
-        ;mov     al, 04h
-        ;mul     cl             
-        shl     cl, 1           
-        shl     cl, 1           ; cl <- cl*4
+        ; 计算按键值=(4-cl)*4+(bl)
 
-        mov     al, 05h
-        sub     al, bl          ; al <- 5-bl
-
-        add     al, cl          ; al <- al+cl
+        mov     ch, 4
+        sub     ch, cl
+        shl     ch, 1
+        shl     ch, 1
+        mov     al, bl
+        add     al, ch
 
         jmp     keyscan_get_key_cond_end
 
