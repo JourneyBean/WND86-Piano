@@ -30,9 +30,13 @@
 ; S1.1.1 ------ 用户定义参数 ------ ;
 
 ; 定时器输入时钟频率
-TIM_CLKSRC_FREQ     equ 1000000
+TIM_CLKSRC_FREQ     equ 184320
 ; Systick频率
-SYSTICK_FREQ        equ 100
+SYSTICK_FREQ        equ 500				; 实际上是1kHz
+
+TIM_CLKSRC_TONE_H		equ 02h
+TIM_CLKSRC_TONE_L		equ 0D000h
+
 ; 数码管扫描速度（Systick分频系数）
 SEG_SRV_DUTY        equ 1
 ; 8254定时器外设地址
@@ -44,7 +48,7 @@ M8255_ADDR           equ IOY1
 
 ; SYSTICK分频数
 SYSTICK_TIM_COUNT   equ TIM_CLKSRC_FREQ/SYSTICK_FREQ
-
+。
 
 ; S1.2 -------- 地址定义 -------- ;
 
@@ -97,30 +101,22 @@ M8259S_ISR   equ 00A0h
 data    segment
 
 ; 数码管段码表
-seg_table   db  3Fh,06h,5Bh,4Fh,66h,6Dh,7Dh,07h     ; 01234567
-            db  7Fh,6Fh,77h,7Ch,39h,5Eh,79h,71h     ; 89abcdef
-            db  3Dh,00h                             ; g 不显示
+seg_table   db  3Fh,06h,5Bh,4Fh,66h,6Dh,7Dh,07h,7Fh,6Fh     ; 0123456789
+            db  39h,5Eh,79h,71h,3Dh,77h,7Ch,00h             ; cdefgab不显示
 
 ; 声音频率表
-freq_table  dw      000
-            dw      TIM_CLKSRC_FREQ/131
-            dw      TIM_CLKSRC_FREQ/147
-            dw      TIM_CLKSRC_FREQ/165
-            dw      TIM_CLKSRC_FREQ/175
-            dw      TIM_CLKSRC_FREQ/196
-            dw      TIM_CLKSRC_FREQ/221
-            dw      TIM_CLKSRC_FREQ/248
-            ;db    000, 262, 294, 330, 350, 393, 441, 495
-            ;db    000, 525, 589, 661, 700, 786, 882, 990
+freq_table dw 131,147,165,175,196,221,248,262,294,330,371,416,467
+;freq_table_m = freq_tablex2
+;freq_table_h = freq_tablex4
             
 ; 数码管缓存，6位数码管
-seg_data    db  6 dup(00h)      
+seg_data    db        00h,00h,39h,06h,00h,06h
 ; 显示分配：
 ;   当前模式（1 演奏模式 2 录音模式 3 播放模式）
 ;   不显示
+;   当前音调
 ;   当前音阶
 ;   当前音区
-;   当前音调
 ;   不显示
 
 
@@ -137,9 +133,16 @@ key_status_last         db  00h
 ; systick时间
 systick_time            dw  00h
 
-; 音区存储
-; 音调存储
-; 音阶存储
+; 当前音区
+current_zone			db	01h		; default: mid
+; 当前音调
+current_tone			db	00h		; default: C
+
+; 当前模式
+current_mode			db	01h
+; 01-piano 02-record 03-play
+
+seg_enable				db	01h
 
 data    ends
 
@@ -159,6 +162,9 @@ code    segment
 
 start:  
 
+		mov ax, data
+		mov ds, ax
+
 ; S3.1 -------- 主程序 --------
 
 ; 初始化 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -174,20 +180,26 @@ FPP:
         mov     key_status_last, bl
 
     ; 键盘扫描 ------------------------------------
+    	call seg_set_enable
+		mov cx, 20
+		call delay
+		call seg_set_disable
         call    keyscan
-        test    al, FFh
+        test    al, 0FFh
         jz      main_cond_keyscan_nokey
 
         main_cond_keyscan_pressed:
         ; 保存当前按键状态
         mov     bh, 01h
         mov     key_status_current, bh
+        call probe_led_on
         jmp     main_cond_keyscan_end
 
         main_cond_keyscan_nokey:
         ; 保存当前按键状态
         mov     bh, 00h
         mov     key_status_current, bh
+        call probe_led_off
         main_cond_keyscan_end:
 
     ; 此时 al-按键值 bl-上一按键状态 bh-当前按键状态
@@ -197,11 +209,11 @@ FPP:
     ; 按键处理程序中，bx可任意更改
 
         test    bl, 01h
-        jnz     main_cond_keyevent_last_pressed:
+        jnz     main_cond_keyevent_last_pressed
 
         main_cond_keyevent_last_nokey:
             test    bh, 01h
-            jnz     main_cond_keyevent_last_nokey_current_pressed:
+            jnz     main_cond_keyevent_last_nokey_current_pressed
             main_cond_keyevent_last_nokey_current_nokey:
                 call    keyevent_handler_idle
                 jmp     main_cond_keyevent_last_end
@@ -212,7 +224,7 @@ FPP:
 
         main_cond_keyevent_last_pressed:
             test    bh, 01h
-            jnz     main_cond_keyevent_last_pressed_current_pressed:
+            jnz     main_cond_keyevent_last_pressed_current_pressed
             main_cond_keyevent_last_pressed_current_nokey:
                 call    keyevent_handler_released
                 jmp     main_cond_keyevent_last_end
@@ -295,32 +307,6 @@ M8254_init proc
         ret
 M8254_init endp
 
-; 8254定时器获取当前计数程序（获取systick）---- （已废弃——不需要的函数）
-; 传出：ax 计数值
-;M8254_get_channel_0 proc
-;        push    dx
-;        push    bx
-
-;        mov     dx, M8254_CTL
-;        mov     al, 00000100b           ; 通道0，锁存，方式2，二进制
-;        out     dx, al
-
-;        mov     dx, M8254_A
-;        in      al, dx                  ; 读取通道0
-;        mov        bl, al
-;        in      al, dx
-;        mov        bh, al
-;        mov        ax, bx
-
-;        mov     dx, M8254_CTL
-;        mov     al, 00110100b           ; 通道0，16位读写，方式2，二进制
-;        out     dx, al
-    
-;        pop        bx
-;        pop     dx
-;        ret
-;M8254_get_channel_0 endp
-
 
 ; /////////////////////////////////////////////////////////////
 ; S3.2.2.2 并口外设
@@ -338,7 +324,6 @@ M8255_init proc
         pop     dx
         ret
 M8255_init endp
-
 
 ; /////////////////////////////////////////////////////////////
 ; S3.2.2.3 中断外设
@@ -372,26 +357,6 @@ M8259_init endp
 
 ; /////////////////////////////////////////////////////////////
 ; S3.2.3.1 延时程序
-
-; 延时1ms子程序(systick) >>>>>>>>>>>>>>>>>>>>>>>>>>>
-;delay_1ms_timer proc
-;        push    ax
-;        push    bx
-
-;        call    M8254_get_channel_0
-;        mov     bx, ax
-;        dec     bx 
-;delay_1ms_timer_loop_begin:
-;        nop
-;        call    M8254_get_channel_0
-;        sub     ax, bx
-;        jnz     delay_1ms_timer_loop_begin
-;delay_1ms_timer_loop_end:
-
-;        pop     bx
-;        pop     ax
-;        ret
-;delay_1ms_timer endp
 
 delay_1ms proc
 
@@ -483,7 +448,7 @@ keyscan_get_column_loop_begin:
         jz      keyscan_get_column_loop_end
         ; 否则继续
         shr     al, 1
-        jc      keyscan_get_column_loop_end             ; 如果当前为0则退出扫描（已扫描到）
+        jnc      keyscan_get_column_loop_end             ; 如果当前为0则退出扫描（已扫描到）
         loop    keyscan_get_column_loop_begin
 
 keyscan_get_column_loop_end:
@@ -525,14 +490,15 @@ keyscan_get_key_loop_end:
         jz      keyscan_get_key_cond_err    ; CX=0，未扫描到按键
 ; 成功扫描到按键
         ; 当前 bx=第几列 cx=第几行
-        ; 计算按键值=(4-cl)*4+(bl)
-
-        mov     ch, 4
-        sub     ch, cl
-        shl     ch, 1
-        shl     ch, 1
-        mov     al, bl
-        add     al, ch
+        ; 计算按键值=(cx-1)*4+(5-bx) Not right
+        ; (4-cl)*4+(bl)
+        
+        mov ch, 4
+        sub ch, cl
+        shl ch, 1
+        shl ch, 1
+        mov al, bl
+        add al, ch
 
         jmp     keyscan_get_key_cond_end
 
@@ -550,17 +516,40 @@ keyscan_get_key endp
 
 ; 键盘扫描 完整程序 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 keyscan proc
+		push bx
 ; 判断按键是否被按下
 keyscan_cond_ispressed:
+		; 保存端口A状态
+		mov dx, M8255_A
+		in al, dx
         call    keyscan_get_status
+        ; 恢复端口A状态
+		mov dx, M8255_A
+		out dx, al
         jz      keyscan_cond_ispressed_false        ; 如果无按键按下，退出
 ; 如果被按下
         ; 延时20ms，再次判断是否按下
         call    delay_20ms
+        ; 保存端口A状态
+		mov dx, M8255_A
+		in al, dx
         call    keyscan_get_status
+        ; 恢复端口A状态
+		mov dx, M8255_A
+		out dx, al
         jz      keyscan_cond_ispressed_false        ; 第二次无按键按下，也退出
     ; 如果第二次也按下（稳态）
+    	; 保存端口A状态
+		mov dx, M8255_A
+		in al, dx
+		mov bl, al
         call    keyscan_get_key                     ; 获取按键（存于AL）
+        mov ah, al
+        ; 恢复端口A状态
+        mov al, bl
+		mov dx, M8255_A
+		out dx, al
+		mov al, ah
         jmp     keyscan_return                      ; 返回
 ; 如果未按下
 keyscan_cond_ispressed_false:
@@ -569,6 +558,7 @@ keyscan_cond_ispressed_false:
         jmp     keyscan_return
 
 keyscan_return:
+		pop		bx
         ret
 keyscan endp
 
@@ -584,45 +574,55 @@ seg_display proc
 		mov		al, 00h
         mov     dx, M8255_B
         out     dx, al              ; 消隐
+        
+        mov al, seg_enable
+        cmp al, 1
+        jnz seg_display_end
 
         ; 获取当前数码管片选
         mov     al, seg_current_chip
         
-        test    al, 11011111b
+        cmp    al, 00011111b
         jz      seg1_show
-        test    al, 11101111b
+        cmp    al, 00101111b
         jz      seg2_show
-        test    al, 11110111b
+        cmp    al, 00110111b
         jz      seg3_show
-        test    al, 11111011b
+        cmp    al, 00111011b
         jz      seg4_show
-        test    al, 11111101b
+        cmp    al, 00111101b
         jz      seg5_show
         jmp     seg6_show
 
 seg1_show:
+		mov 	al, 00011111b
         mov     ah, seg_data[0]
-        mov     bl, 11101111b
+        mov     bl, 00101111b
         jmp     seg_display_return
 seg2_show:
+		mov		al, 00101111b
         mov     ah, seg_data[1]
-        mov     bl, 11110111b
+        mov     bl, 00110111b
         jmp     seg_display_return
 seg3_show:
+		mov		al, 00110111b
         mov     ah, seg_data[2]
-        mov     bl, 11111011b
+        mov     bl, 00111011b
         jmp     seg_display_return
 seg4_show:
+		mov		al, 00111011b
         mov     ah, seg_data[3]
-        mov     bl, 11111101b
+        mov     bl, 00111101b
         jmp     seg_display_return
 seg5_show:
+		mov		al, 00111101b
         mov     ah, seg_data[4]
-        mov     bl, 11111110b
+        mov     bl, 00111110b
         jmp     seg_display_return
 seg6_show:
+		mov 	al, 00111110b
         mov     ah, seg_data[5]
-        mov     bl, 11011111b
+        mov     bl, 00011111b
         
 seg_display_return:
 
@@ -637,11 +637,22 @@ seg_display_return:
 
         mov     seg_current_chip, bl
 
+seg_display_end:
         pop     dx
         pop     bx
         pop     ax
         ret
 seg_display endp
+
+seg_set_enable proc
+		mov seg_enable, 1
+		ret
+seg_set_enable endp
+
+seg_set_disable proc
+		mov	seg_enable, 0
+		ret
+seg_set_disable endp
 
 
 ; /////////////////////////////////////////////////////////////
@@ -654,9 +665,9 @@ beep_enable proc
         push    ax
         
         ; 设置PC4=1
-        mov     dx, M8255_C
-        mov     al, 010h
-        out     dx, al
+        mov dx, M8255_CTL
+        mov al, 00001001b
+        out dx, al
         
         pop     ax
         pop     dx
@@ -668,9 +679,9 @@ beep_disable proc
         push    ax
         
         ; 设置PC4=0
-        mov        dx, M8255_C
-        mov        al, 00h
-        out        dx, al
+        mov dx, M8255_CTL
+        mov al, 00001000b
+        out dx, al
         
         pop        ax
         pop        dx
@@ -687,17 +698,39 @@ beep_set_tone proc
         push    cx
         push    dx
         
-        mov        si, ax
-        and        si, 00FFh
-        mov        bx, freq_table[si]
+        ; 获取频率
+        ; al 存放音符
+        mov si, ax
+        and si, 00FFh
         
-        mov        cl, ah
-        shr        bx, cl
+        ; ah[3:0] 存放音调
+        ; c-0 d-1 e-2 f-3 g-4 a-5 b-6
+        mov bl, ah
+        and bx, 000Fh
+        add si, bx
+        shl si, 1
+        
+        mov bx, freq_table[si]
+        
+        ; ah[7:4] 存放音区
+        ; 低-0 中-1 高-2
+        mov cl, ah
+        shr cl, 1
+        shr cl, 1
+        shl bx, cl
+        
+        ; 计算分频数
+        mov dx, TIM_CLKSRC_TONE_H
+        mov ax, TIM_CLKSRC_TONE_L
+        div bx
+        
+        mov bx, ax
         
         ; 定时器值送往8254
         mov        dx, M8254_B
         mov        al, bl
         out        dx, al
+        
         mov        al, bh
         out        dx, al
         
@@ -710,21 +743,50 @@ beep_set_tone proc
         ret
 beep_set_tone endp
 
+probe_led_on proc
+        push    dx
+        push    ax
+        
+        ; 设置PC5=1
+        mov dx, M8255_CTL
+        mov al, 00001011b
+        out dx, al
+        
+        pop        ax
+        pop        dx
+        ret
+probe_led_on endp
+
+probe_led_off proc
+        push    dx
+        push    ax
+        
+        ; 设置PC5=0
+        mov dx, M8255_CTL
+        mov al, 00001010b
+        out dx, al
+        
+        pop        ax
+        pop        dx
+        ret
+probe_led_off endp
+
 
 ; S3.2.5 ------ 按键处理 ------
 
 ; 按键按下程序
 keyevent_handler_pressed proc
+		call	mod_mode_pressed
         call    mod_piano_pressed
-        call    mod_recorder_pressed
-        call    mod_player_pressed
+        ;call    mod_recorder_pressed
+        ;call    mod_player_pressed
         ret
 keyevent_handler_pressed endp
 
 ; 按键弹起程序
 keyevent_handler_released proc
         call    mod_piano_released
-        call    mod_recorder_released
+        ;call    mod_recorder_released
         ret
 keyevent_handler_released endp
 
@@ -736,32 +798,206 @@ keyevent_handler_hold endp
 
 ; 按键空闲程序
 keyevent_handler_idle proc
-        call    mod_player_pressed
+        ;call    mod_player_pressed
         ret
 keyevent_handler_idle endp
 
 ; 键盘扫描后续处理
 keyscan_next_hook proc
         ; 更新数码管：当前模式
+        ret
 keyscan_next_hook endp
 
+
+mod_mode_pressed proc
+		push bx
+
+		mov bl, current_mode
+		
+	; key 13 record
+		cmp al, 13
+		jnz mod_mode_pressed_not_13
+		
+		; current piano target recorder
+		cmp bl, 01
+		jz mod_mode_to_recorder
+		; current recorder target recorder
+		cmp bl, 02
+		jz mod_mode_to_piano
+		; current player target recorder ignored
+		jmp mod_mode_pressed_return
+		
+	mod_mode_pressed_not_13:
+	; key 14 play
+		cmp al, 14
+		jnz mod_mode_pressed_return
+		
+		; current piano target player
+		cmp bl, 01
+		jz mod_mode_to_player
+		
+		; current recorder target player
+		cmp bl, 02
+		jz mod_mode_to_player
+		
+		; current player target player
+		jmp mod_mode_to_piano
+		
+		
+	mod_mode_to_piano:
+		mov bl, 01
+		jmp mod_mode_to_end
+	mod_mode_to_recorder:
+		mov bl, 02
+		jmp mod_mode_to_end
+	mod_mode_to_player:
+		mov bl, 03
+		
+	mod_mode_to_end:
+		mov current_mode, bl
+		
+		mov si, bx
+		and si, 00FFh
+		mov ah, seg_table[si]
+		mov seg_data[5], ah
+		
+mod_mode_pressed_return:
+		pop bx
+		ret
+mod_mode_pressed endp
 
 ; S3.2.6 ------ 演奏程序 ------
 
 ; 演奏程序-按键按下事件hook
 mod_piano_pressed proc
 
-    ; 为音调按键
+		; no response to mode 3(playing)
+		mov bl, current_mode
+		cmp bl, 03
+		jz mod_piano_pressed_return_temp
 
-        ; 更新数码管显示
+		; key 0
+		cmp al, 00h
+		jz mod_piano_pressed_return_temp
+	
+		; key 1-7
+		cmp al, 8
+		jc mod_piano_pressed_key_note
+		
+		; key 9
+		cmp al, 9
+		jz mod_piano_pressed_key_tone_up
+		
+		; key 10
+		cmp al, 10
+		jz mod_piano_pressed_key_tone_down
+		
+		; key 11
+		cmp al, 11
+		jz mod_piano_pressed_key_zone_up
+		
+		; key 12
+		cmp al, 12
+		jz mod_piano_pressed_key_zone_down_temp
+	
+	; avoiding jumping too far
+	mod_piano_pressed_return_temp:
+		jmp mod_piano_pressed_return
+	
+	; 为音阶按键
+	mod_piano_pressed_key_note:
+
+        ; 更新数码管音符区显示
+        mov si, ax
+        and si, 00FFh
+        mov ah, seg_table[si]
+        mov seg_data[1], ah
 
         ; 驱动蜂鸣器发声
-        mov     ah, 1
+        ; current zone
+        mov ah, current_zone
+        shl ah, 1
+        shl ah, 1
+        shl ah, 1
+        shl ah, 1
+        and ah, 0F0h
+        mov bl, current_tone
+        and bl, 0Fh
+        or ah, bl
+        
+        dec 	al				; convert keycode to freq index
+        call beep_set_tone
         call    beep_enable
+        
+        jmp mod_piano_pressed_return
+        
+    ; 为音调调节按键
+    mod_piano_pressed_key_tone_up:
+    	
+    	mov al, current_tone
+    	cmp al, 6
+    	jz mod_piano_pressed_return
+    	inc al
+    	mov current_tone, al
+    	
+    	mov si, ax
+    	and si, 00FFh
+    	add si, 10
+    	mov ah, seg_table[si]
+    	mov seg_data[3], ah
+    	
+    	jmp mod_piano_pressed_return
+    	
+  	mod_piano_pressed_key_tone_down:
+  		
+  		mov al, current_tone
+    	cmp al, 0
+    	jz mod_piano_pressed_return
+    	dec al
+    	mov current_tone, al
+    	
+    	mov si, ax
+    	and si, 00FFh
+    	add si, 10
+    	mov ah, seg_table[si]
+    	mov seg_data[3], ah
+  	
+  		jmp mod_piano_pressed_return
+  		
+  	mod_piano_pressed_key_zone_down_temp:
+  		jmp mod_piano_pressed_key_zone_down
+  		
+  	mod_piano_pressed_key_zone_up:
+  	
+  		mov al, current_zone
+  		cmp al, 2
+  		jz mod_piano_pressed_return
+  		inc al
+  		mov current_zone, al
+  		
+  		mov si, ax
+  		and si, 00FFh
+  		mov ah, seg_table[si]
+  		mov seg_data[2], ah
+  		
+  		jmp mod_piano_pressed_return
+  		
+  	mod_piano_pressed_key_zone_down:
+  	
+  		mov al, current_zone
+  		cmp al, 0
+  		jz mod_piano_pressed_return
+  		dec al
+  		mov current_zone, al
+  		
+  		mov si, ax
+  		and si, 00FFh
+  		mov ah, seg_table[si]
+  		mov seg_data[2], ah
+  		
+  		jmp mod_piano_pressed_return
 
-    ; 为音区音阶调节按键
-
-        ; 更新数码管显示
+	mod_piano_pressed_return:
 
         ret
 mod_piano_pressed endp
@@ -845,19 +1081,21 @@ mir7_handler proc
         mov     systick_time, ax
 
         ; SEG 处理
-        mov     al, seg_refresh_duty_count
-        inc     al
-        cmp     al, SEG_SRV_DUTY            ; 当前=预设分频?
-        jz      seg_refresh_duty_cond_true
+        ;mov     al, seg_refresh_duty_count
+        ;inc     al
+        ;cmp     al, SEG_SRV_DUTY            ; 当前=预设分频?
+        ;jz      seg_refresh_duty_cond_true
 seg_refresh_duty_cond_false:                ; 不等于，分频计数+1
-        inc     al
-        mov     seg_refresh_duty_count, al
-        jmp     seg_refresh_duty_cond_end
+        ;inc     al
+        ;mov     seg_refresh_duty_count, al
+        ;jmp     seg_refresh_duty_cond_end
 seg_refresh_duty_cond_true:                 ; 等于，刷新显示，重置分频计数
-        call    seg_display
-        mov     al, 0
-        mov     seg_refresh_duty_count, al
+        ;call    seg_display
+        ;mov     al, 0
+        ;mov     seg_refresh_duty_count, al
 seg_refresh_duty_cond_end:
+
+		call seg_display
 
         ; 中断结束
         mov     al, 20h
