@@ -886,8 +886,12 @@ mod_mode_pressed proc
         
     mod_mode_to_piano:
         ; +--------------------------- todo -----------------------------+
-        ; | bug: 未位于录音状态时转换至弹琴模式将修改第一个键值记录，应添加判断代码
+        ; | bug: 未位于录音状态时转换至弹琴模式将修改第一个键值记录，应添加判断代码 Fixing: waiting for validation
         ; | opt: 与下方部分代码重复，可优化
+
+        ; 当前模式为录音，对应动作：停止录音
+        cmp bl, 02
+        jnz mod_mode_to_piano_not_recording
 
         ; close recording
         ; 正在录音，保存录音并退出
@@ -900,6 +904,10 @@ mod_mode_pressed proc
         mov     recorder_head, 0
         mov     recorder_last_time, 0
         
+        mod_mode_to_piano_not_recording:
+
+        ; 当前模式为播放，停止播放
+
         ; close playing
         mov     player_head, 0
         pop     si
@@ -930,7 +938,7 @@ mod_mode_pressed endp
 
 ; S3.2.6 ------ 演奏程序 ------
 
-; 演奏程序-按键按下事件hook
+; 演奏程序-按键按下事件hook >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 ; 传入： al 按键值
 ; 传出： al 按键值 bx 蜂鸣器配置值
 mod_piano_pressed proc
@@ -1069,7 +1077,7 @@ mod_piano_pressed proc
         ret
 mod_piano_pressed endp
 
-; 演奏程序-按键弹起事件hook
+; 演奏程序-按键弹起事件hook >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 mod_piano_released proc
         push    ax
 
@@ -1102,7 +1110,7 @@ mod_piano_released proc
         ret
 mod_piano_released endp
 
-; 录音程序-按键按下事件hook
+; 录音程序-按键按下事件hook >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 ; 传入：al 按键值 bx 蜂鸣器配置
 ; 传出：al 按键值
 mod_recorder_pressed proc
@@ -1154,7 +1162,7 @@ mod_recorder_pressed proc
         ret
 mod_recorder_pressed endp
 
-; 录音程序-按键弹起事件hook
+; 录音程序-按键弹起事件hook >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 mod_recorder_released proc
     push    ax
     push    bx
@@ -1200,7 +1208,7 @@ mod_recorder_released_return:
         ret
 mod_recorder_released endp
 
-; 播放程序-按键按下事件hook
+; 播放程序-按键按下事件hook >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 ; 传入：al 按键值
 ; 传出：al 按键值
 mod_player_pressed proc
@@ -1220,7 +1228,7 @@ mod_player_pressed_return:
 mod_player_pressed endp
 
 ; +-------------------------------- todo ----------------------------+
-; | opt: 播放时更改音调音区音阶显示
+; | opt: 播放时更改音调音区音阶显示 Fixing: Waiting for validation
 ; +------------------------------- todo end -------------------------+
 ; 播放程序-按键空闲事件hook
 mod_player_idle proc
@@ -1258,6 +1266,35 @@ mod_player_idle_send_configuration:
     mov     ax, bx
     call    beep_set_tone
     call    beep_enable
+    ; todo +++++++++++++++++++++++++++++
+    ; 设置数码管
+    ; 音阶
+    mov     si, bx
+    and     si, 00FFh
+    inc     si
+    mov     ah, seg_table[si]
+    mov     seg_data[1], ah
+    ; 音调
+    mov     ax, bx
+    mov     al, ah
+    mov     si, ax
+    and     si, 000Fh
+    add     si, 10
+    mov     ah, seg_table[si]
+    mov     seg_data[3], ah
+    ; 音区
+    mov     ax, bx          ; -------- todo: opt: 代码可精简
+    mov     al, ah
+    shr     al, 1
+    shr     al, 1
+    shr     al, 1
+    shr     al, 1
+    mov     si, ax
+    and     si, 000Fh
+    mov     ah, seg_table[si]
+    mov     seg_data[4], ah
+
+    ; todo end +++++++++++++++++++++++++
     ; 记录当前时间
     mov     ax, systick_time
     mov     player_last_time, ax
@@ -1300,7 +1337,7 @@ mod_player_idle_wait_next_tone: ;--------------------probe 有重复代码，可
     mov     ax, player_last_time
     
     ; +--------------------------- todo --------------------------+
-    ; | bug: 播放完毕后未刷新数码管状态显示
+    ; | bug: 播放完毕后未刷新数码管状态显示 Fixing: Waiting for validation
     ; +-----------------------------------------------------------+
     ; bx=0, 播放完毕
     cmp     bx, 0000h
@@ -1308,6 +1345,10 @@ mod_player_idle_wait_next_tone: ;--------------------probe 有重复代码，可
     mov     current_mode, 01h        ; back to piano
     mov     player_head, 0
     mov     player_status, 00h
+    ; todo add ++++++++++++
+    mov     ah, seg_table[1]            ; 显示1
+    mov     seg_data[5], ah
+    ; todo add end ++++++++
     jmp     mod_player_idle_return
 
     ; +---------------------------- todo end ----------------------------+
