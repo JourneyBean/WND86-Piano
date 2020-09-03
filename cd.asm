@@ -1219,6 +1219,9 @@ mod_player_pressed_return:
         ret
 mod_player_pressed endp
 
+; +-------------------------------- todo ----------------------------+
+; | opt: 播放时更改音调音区音阶显示
+; +------------------------------- todo end -------------------------+
 ; 播放程序-按键空闲事件hook
 mod_player_idle proc
         push    ax
