@@ -115,8 +115,8 @@ seg_data    db        00h,00h,39h,06h,00h,06h
 ;   当前模式（1 演奏模式 2 录音模式 3 播放模式）
 ;   不显示
 ;   当前音调
-;   当前音阶
 ;   当前音区
+;   当前音阶
 ;   不显示
 
 
@@ -133,6 +133,9 @@ key_status_last         db  00h
 ; systick时间
 systick_time            dw  00h
 
+; 上次按键
+last_key                db 00h
+
 ; 当前音区
 current_zone			db	01h		; default: mid
 ; 当前音调
@@ -142,7 +145,23 @@ current_tone			db	00h		; default: C
 current_mode			db	01h
 ; 01-piano 02-record 03-play
 
+; 数码管使能标志
 seg_enable				db	01h
+
+; 录音指针
+recorder_head           db 00h
+; 录音上次记录按键按下/弹起时间
+recorder_last_time      dw 00h
+; 录音数据区
+recorder_data       dw 210 dup(00h)
+
+; 播放程序状态
+player_status           db 00h
+; 00 - waiting for first sequence
+; 01 - waiting for second sequence
+
+player_head             db 00h
+player_last_time        dw 00h
 
 data    ends
 
@@ -174,6 +193,7 @@ start:
 FPP:
         
     ; 更新上一按键状态 --------------------------------
+        mov     last_key, al
         mov     bl, key_status_last
         mov     bh, key_status_current
         mov     bl, bh
@@ -778,15 +798,14 @@ probe_led_off endp
 keyevent_handler_pressed proc
 		call	mod_mode_pressed
         call    mod_piano_pressed
-        ;call    mod_recorder_pressed
-        ;call    mod_player_pressed
+        call    mod_recorder_pressed
         ret
 keyevent_handler_pressed endp
 
 ; 按键弹起程序
 keyevent_handler_released proc
         call    mod_piano_released
-        ;call    mod_recorder_released
+        call    mod_recorder_released
         ret
 keyevent_handler_released endp
 
@@ -808,7 +827,9 @@ keyscan_next_hook proc
         ret
 keyscan_next_hook endp
 
-
+; 模式切换处理hook
+; 传入： al 按键值
+; 传出： al 按键值
 mod_mode_pressed proc
 		push bx
 
@@ -869,7 +890,10 @@ mod_mode_pressed endp
 ; S3.2.6 ------ 演奏程序 ------
 
 ; 演奏程序-按键按下事件hook
+; 传入： al 按键值
+; 传出： al 按键值 bx 蜂鸣器配置值
 mod_piano_pressed proc
+        push ax                 ; 保存按键值
 
 		; no response to mode 3(playing)
 		mov bl, current_mode
@@ -926,6 +950,7 @@ mod_piano_pressed proc
         or ah, bl
         
         dec 	al				; convert keycode to freq index
+        push ax                 ; 保存蜂鸣器配置
         call beep_set_tone
         call    beep_enable
         
@@ -998,70 +1023,193 @@ mod_piano_pressed proc
   		jmp mod_piano_pressed_return
 
 	mod_piano_pressed_return:
-
+        pop bx          ; 恢复并传出蜂鸣器配置
+        pop ax          ; 恢复并传出按键值
         ret
 mod_piano_pressed endp
 
 ; 演奏程序-按键弹起事件hook
 mod_piano_released proc
+        push ax
+
+        ; 仅作用于演奏模式
+        mov al, current_mode
+        cmp al, 01h
+        jnz mod_piano_released_return
+
+        ; 仅用作按键1-7弹起
+        ; 筛选按键0-7
+        mov al, last_key
+        cmp al, 8
+        jnc mod_piano_released_return
+
+        ; 按键0忽略
+        test al, 0FFh
+        jz mod_piano_released_return
 
         ; 关闭蜂鸣器
         call    beep_disable
 
+    mod_piano_released_return:
+        pop ax
         ret
 mod_piano_released endp
 
 ; 录音程序-按键按下事件hook
+; 传入：al 按键值 bx 蜂鸣器配置
+; 传出：al 按键值
 mod_recorder_pressed proc
+        push cx
+        push dx
 
-    ; 为音调按键
-        ; 计算上一音调弹起延时
-            ; 上一音调弹起延时=此时时间-缓存时间
+    ; 仅作用于录音模式
+    mov cl, current_mode
+    cmp cl, 02h
+    jnz mod_recorder_pressed_not_record_mode
+    jmp mod_recorder_pressed_is_record_mode
 
-        ; 记录此音阶音区音调
-        ; 缓存当前时间
+mod_recorder_pressed_not_record_mode:
 
-    ; 为录音功能按键
+    ; 当用户录音结束，会按下录音功能键，此时模式改变，但此模块仍会收到按键按下的信号
+    ; 此时需要判断是否正在录音，如果在录音，需要停止
+    mov dl, recorder_head
+    test dl, 0FFh
+    ; 未在录音，直接退出
+    jz mod_recorder_pressed_return
+    ; 正在录音，保存录音并退出     ---------------------probe 与下方代码重复，可优化
+    mod_recorder_pressed_save:
+    mov si, dx
+    and si, 00FFh
+    mov recorder_last_time, 0
+    mov recorder_data[si], 0
+    mov recorder_head, 0
+    jmp mod_recorder_pressed_return
 
+mod_recorder_pressed_is_record_mode:
+
+    ; 按键1-7
+    mov cl, al
+    cmp cl, 8
+    jnc mod_recorder_pressed_return
+    ; （录音模式切换功能由模式切换模块管理，无需检查录音功能键按下情况）
+
+    ; 检查录音指针是否在头部
+    mov cl, recorder_head
+    mov si, cx
+    and si, 00FFh
+    test si, 0FFh
+    jz mod_recorder_pressed_data_empty
+        ; 录音指针不位于头部，需要计算按键空闲时间
+        ; 计算按键空闲时间
+        mov cx, recorder_last_time
+        mov dx, systick_time
+        push dx
+        sub dx, cx
+        ; 保存空闲时间
+        mov recorder_data[si], dx
+        add si, 2
+
+        ; 录音指针位于头部，直接保存蜂鸣器配置
+    mod_recorder_pressed_data_empty:
+    mov recorder_data[si], bx
+    ; 录音指针增加2（已保存16位数据）
+    add si, 2
+    ; 保存录音指针
+    mov cx, si
+    mov recorder_head, cl
+
+    ; 保存本次时间
+    pop dx
+    mov recorder_last_time, dx
+
+    mod_recorder_pressed_return:
+        pop dx
+        pop cx
         ret
 mod_recorder_pressed endp
 
 ; 录音程序-按键弹起事件hook
 mod_recorder_released proc
-    
-    ; 为音调按键
+    push ax
+    push bx
 
-        ; 计算上一音调按下延时
+    ; 仅响应录音模式
+    mov ah, current_mode
+    cmp ah, 02h
+    jnz mod_recorder_released_return
 
-        ; 记录此音调弹起时间
+    ; 仅响应按键1-7
+    mov al, last_key
+    cmp al, 8
+    jnc mod_recorder_released_return
+    ; 不响应按键0
+    test al, 0FFh
+    jz mod_recorder_released_return
 
+    ; 防止错误：当录音指针=0,不响应
+    mov al, recorder_head
+    test al, 0FFh
+    jz mod_recorder_released_return
+
+    mov si, ax
+    and si, 00FFh
+
+    ; 按下延时
+    mov ax, systick_time
+    mov bx, recorder_last_time
+    ; 保存现在时间
+    mov recorder_last_time, ax
+    ; 保存延时时间
+    sub ax, bx
+    mov recorder_data[si], ax
+
+mod_recorder_released_return:
+    pop bx
+    pop ax
         ret
 mod_recorder_released endp
 
 ; 播放程序-按键按下事件hook
+; 传入：al 按键值
+; 传出：al 按键值
 mod_player_pressed proc
+    push bx
 
-        ; 判断按键是否为播放键
+    ; 仅作用于播放模式
+    mov bl, current_mode
+    cmp bl, 3
+    jnz mod_player_pressed_return
 
-        ; 如果是播放按键
-        
-            ; 判断当前状态是否为播放状态
+    ; 任意按键按下即停止播放
+    call beep_disable
 
-            ; 是播放状态
-
-                ; 停止播放（设置状态=演奏）
-
-            ; 不是播放状态
-
-                ; 开始播放（设置状态=播放）
-
-        ; 如果不是播放按键
-
+mod_player_pressed_return:
+    pop bx
         ret
 mod_player_pressed endp
 
 ; 播放程序-按键空闲事件hook
 mod_player_idle proc
+
+    ; 仅作用于播放模式
+    mov ax, current_mode
+    cmp ax, 03h
+    jnz mod_player_idle_return
+
+    mov al, player_last_time
+    test al, 0FFh
+    jnz player_status_up
+; 按键按下延时
+player_status_down:
+    mov ax, 
+    
+    mov dx, systick_time
+    mov 
+;按键弹起延时
+player_status_up:
+
+mod_player_idle_return:
+
         ret
 mod_player_idle endp
 
