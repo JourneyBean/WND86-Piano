@@ -167,6 +167,8 @@ player_head             db  00h
 ; 播放器上次时间记录
 player_last_time        dw  00h
 
+welcome_status          db  01h
+
 data    ends
 
 
@@ -192,7 +194,8 @@ start:
 
 ; 初始化 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         call    init
-
+        call    data_init
+        call    welcome_init
 ; 主循环 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 FPP:
         
@@ -286,16 +289,37 @@ init proc
         mov     recorder_head, 0
         mov     player_head, 0
         mov     player_status, 0
+        sti
+        ret
+init endp
+
+data_init proc
+        mov     key_status_current, 00h
+        mov     key_status_last, 00h
+        mov     systick_time, 0
+        mov     current_zone, 1
+        mov     current_tone, 0
+        mov     current_mode, 01
+        mov     recorder_head, 0
+        mov     player_head, 0
+        mov     player_status, 0
         mov     seg_data[0], 00h
         mov     seg_data[1], 00h
         mov     seg_data[2], 39h
         mov     seg_data[3], 06h
         mov     seg_data[4], 00h
         mov     seg_data[5], 06h
+        mov     welcome_status, 01h
+data_init endp
 
-        sti
-        ret
-init endp
+welcome_init proc
+        mov     seg_data[5], 4Fh
+        mov     seg_data[4], 4Fh
+        mov     seg_data[3], 66h
+        mov     seg_data[2], 3Fh
+        mov     seg_data[1], 06h
+        mov     seg_data[0], 7Fh
+welcome_init endp
 
 ; 中断初始化子程序
 ; 填写中断向量表
@@ -1267,6 +1291,10 @@ mod_player_idle_send_configuration:
     call    beep_set_tone
     call    beep_enable
     ; todo +++++++++++++++++++++++++++++
+    ; 如果不是欢迎模式
+    mov     al, welcome_status
+    test    al, 0FFh
+    jnz     mod_player_idle_send_configuration_welcome_compactbility_end
     ; 设置数码管
     ; 音阶
     mov     si, bx
@@ -1293,6 +1321,7 @@ mod_player_idle_send_configuration:
     and     si, 000Fh
     mov     ah, seg_table[si]
     mov     seg_data[4], ah
+    mod_player_idle_send_configuration_welcome_compactbility_end:
 
     ; todo end +++++++++++++++++++++++++
     ; 记录当前时间
@@ -1346,8 +1375,24 @@ mod_player_idle_wait_next_tone: ;--------------------probe 有重复代码，可
     mov     player_head, 0
     mov     player_status, 00h
     ; todo add ++++++++++++
+    ; 显示状态
     mov     ah, seg_table[1]            ; 显示1
     mov     seg_data[5], ah
+    ; 显示音调
+    mov     al, current_tone
+    mov     si, ax
+    and     si, 00FFh
+    add     si, 10
+    mov     ah, seg_table[si]
+    mov     seg_data[3], ah
+    ; 显示音区
+    mov     al, current_zone
+    mov     si, ax
+    and     si, 00FFh
+    mov     ah, seg_table[si]
+    mov     seg_data[2], ah
+    ; 不显示音阶
+    mov     seg_data[1], 00h
     ; todo add end ++++++++
     jmp     mod_player_idle_return
 
