@@ -1,5 +1,5 @@
 ;=============================================
-;
+; todo: 按键值瞬间变化处理，验证录音播放程序
 ; +++++++++++++++++++++++++++++++++++++++++++
 ; |        微机原理和接口技术 综合设计        |
 ; +++++++++++++++++++++++++++++++++++++++++++
@@ -157,8 +157,9 @@ recorder_data       dw 210 dup(00h)
 
 ; 播放程序状态
 player_status           db 00h
-; 00 - waiting for first sequence
-; 01 - waiting for second sequence
+; 00 - need to send beep configurations
+; 01 - waiting for first sequence
+; 02 - waiting for second sequence
 
 player_head             db 00h
 player_last_time        dw 00h
@@ -1190,26 +1191,91 @@ mod_player_pressed endp
 
 ; 播放程序-按键空闲事件hook
 mod_player_idle proc
-
+        push ax
+        push bx
+        push si
     ; 仅作用于播放模式
     mov ax, current_mode
     cmp ax, 03h
     jnz mod_player_idle_return
 
+    ; 存储si
+    mov al, player_head
+    mov si, ax
+    and si, 00FFh
+
+    ; 获取存储
+    mov bx, recorder_data[si]
+
+    ; 当前：si 数据指针 bx 数据
+
     mov al, player_last_time
-    test al, 0FFh
-    jnz player_status_up
-; 按键按下延时
-player_status_down:
-    mov ax, 
-    
-    mov dx, systick_time
-    mov 
-;按键弹起延时
-player_status_up:
+    cmp al, 00h
+    jz mod_player_idle_send_configuration
+    cmp al, 01h
+    jz mod_player_idle_wait_tone
+    jmp mod_player_idle_wait_next_tone
+
+mod_player_idle_send_configuration:
+    ; 设置并开启蜂鸣器
+    mov ax, bx
+    call beep_set_tone
+    call beep_enable
+    ; 记录当前时间
+    mov ax, systick_time
+    mov player_last_time, ax
+    ; 设置下一状态
+    mov player_status, 01h
+    ; 设置播放指针
+    add si, 2
+    mov player_head, si
+    jmp mod_player_idle_return
+
+mod_player_idle_wait_tone:
+    ; 设置目标时间
+    mov ax, player_last_time
+    add bx, ax
+    ; 是否到达目标时间
+    mov ax, systick_time
+    cmp bx, ax
+    ; 未到达，退出
+    jnz mod_player_idle_return
+    ; 到达
+    ; 关闭蜂鸣器
+    call beep_disable
+    ; 存储当前时间
+    mov player_last_time, ax
+    ; 设置播放指针
+    add si, 2
+    mov ax, si
+    mov player_head, al
+    ; 设置下一状态
+    mov player_status, 02
+    jmp mod_player_idle_return
+
+mod_player_idle_wait_next_tone ;--------------------probe 有重复代码，可优化
+    ; 设置目标时间
+    mov ax, player_last_time
+    add bx, ax
+    ; 是否到达目标时间
+    mov ax, systick_time
+    cmp bx, ax
+    ; 未到达，退出
+    jnz mod_player_idle_return
+    ; 到达
+    ; 设置播放指针
+    add si, 2
+    mov ax, si
+    mov player_head, al
+    ; 设置下一状态
+    mov player_status, 02
+    jmp mod_player_idle_return
+
 
 mod_player_idle_return:
-
+        pop si
+        pop bx
+        pop ax
         ret
 mod_player_idle endp
 
