@@ -1,5 +1,5 @@
 ;=============================================
-; todo: 录音满时需提醒
+; todo: 按键值瞬间变化处理，验证录音播放程序
 ; +++++++++++++++++++++++++++++++++++++++++++
 ; |        微机原理和接口技术 综合设计        |
 ; +++++++++++++++++++++++++++++++++++++++++++
@@ -152,9 +152,21 @@ recorder_head           db 00h
 ; 录音上次记录按键按下/弹起时间
 recorder_last_time      dw 00h
 ; 录音数据区
-recorder_data       dw 210 dup(00h)
+;recorder_data       dw 210 dup(00h)
 ;recorder_data dw 0001h,00F00h,00F00h, 0002h,00F00h,00F00h, 0003h,00F00h,0F00h, 0100h,1600h,0000h
-recorder_end  		dw 00h
+recorder_data dw  0005h, 00f0h, 0118h
+	dw  0006h, 00f0h, 0118h
+
+	dw  0100h, 00f0h, 0118h
+	dw  0006h, 00f0h, 0118h
+	dw  0100h, 00f0h, 0118h
+	dw  0102h, 00f0h, 0118h
+
+	dw  0006h, 00f0h, 0118h
+	dw  0002h, 00f0h, 0118h
+
+	dw  0005h, 00f0h, 0000h
+
 ; 播放程序状态
 player_status           db 00h
 ; 00 - need to send beep configurations
@@ -163,6 +175,8 @@ player_status           db 00h
 
 player_head             db 00h
 player_last_time        dw 00h
+
+welcome_flag			db 00h
 
 data    ends
 
@@ -190,6 +204,7 @@ start:
 mov ax, offset recorder_data
 ; 初始化 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         call init
+        call welcome_init
 
 ; 主循环 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 FPP:
@@ -283,15 +298,21 @@ init proc
         mov recorder_head, 0
         mov player_head, 0
         mov player_status, 0
-        mov seg_data[0], 00h
-        mov seg_data[1], 00h
-        mov seg_data[2], 39h
-        mov seg_data[3], 06h
-        mov seg_data[4], 00h
-        mov seg_data[5], 06h
         sti
         ret
 init endp
+
+welcome_init proc
+		mov current_mode, 3
+		mov welcome_flag, 1
+		mov seg_data[5], 4Fh
+		mov seg_data[4], 4Fh
+		mov seg_data[3], 66h
+		mov seg_data[2], 3Fh
+		mov seg_data[1], 06h
+		mov seg_data[0], 7Fh
+		ret
+welcome_init endp
 
 ; 中断初始化子程序
 ; 填写中断向量表
@@ -948,6 +969,7 @@ mod_mode_pressed proc
     	; close playing
     	mov player_head, 0
     	call beep_disable
+    	mov welcome_flag, 00h		; close welcome mode
     	mov player_status, 00h
     	call seg_display_piano
     	
@@ -1327,6 +1349,12 @@ mod_player_idle_send_configuration:
     call beep_set_tone
     call beep_enable
     
+    ; 如果欢迎flag=1,跳过显示数码管
+    push ax
+    mov al, welcome_flag
+    test al, 0FFh
+    jnz mod_player_idle_send_configuration_no_seg_end
+    
     ; 更新数码管显示
     push si
     ; 音阶
@@ -1356,6 +1384,9 @@ mod_player_idle_send_configuration:
     mov     seg_data[2], ah
     
     pop si
+    
+    mod_player_idle_send_configuration_no_seg_end:
+    pop ax
     
     ; 记录当前时间
     mov ax, systick_time
@@ -1405,6 +1436,7 @@ mod_player_idle_wait_next_tone: ;--------------------probe 有重复代码，可
     mov player_head, 0
     mov player_status, 00h
     call seg_display_piano 		; display piano state
+    mov welcome_flag, 00h		; close welcome mode
     jmp mod_player_idle_return
     
     mod_player_idle_bx_not_zero:
