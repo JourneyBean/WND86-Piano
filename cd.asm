@@ -1,5 +1,5 @@
 ;=============================================
-; todo: 按键值瞬间变化处理，验证录音播放程序
+; todo: 录音数据区满提醒
 ; +++++++++++++++++++++++++++++++++++++++++++
 ; |        微机原理和接口技术 综合设计        |
 ; +++++++++++++++++++++++++++++++++++++++++++
@@ -153,19 +153,20 @@ recorder_head           db 00h
 recorder_last_time      dw 00h
 ; 录音数据区
 ;recorder_data       dw 210 dup(00h)
-;recorder_data dw 0001h,00F00h,00F00h, 0002h,00F00h,00F00h, 0003h,00F00h,0F00h, 0100h,1600h,0000h
-recorder_data dw  0005h, 00f0h, 0118h
-	dw  0006h, 00f0h, 0118h
+recorder_data   dw  0005h, 00f0h, 0118h
+	        dw  0006h, 00f0h, 0118h
 
-	dw  0100h, 00f0h, 0118h
-	dw  0006h, 00f0h, 0118h
-	dw  0100h, 00f0h, 0118h
-	dw  0102h, 00f0h, 0118h
+	        dw  0100h, 00f0h, 0118h
+	        dw  0006h, 00f0h, 0118h
+	        dw  0100h, 00f0h, 0118h
+	        dw  0102h, 00f0h, 0118h
 
-	dw  0006h, 00f0h, 0118h
-	dw  0002h, 00f0h, 0118h
+	        dw  0006h, 00f0h, 0118h
+	        dw  0002h, 00f0h, 0118h
 
-	dw  0005h, 00f0h, 0000h
+	        dw  0005h, 00f0h, 0000h
+ 
+                dw 210 dup(00h)
 
 ; 播放程序状态
 player_status           db 00h
@@ -1232,6 +1233,8 @@ mod_recorder_pressed proc
     mov recorder_data[si], bx
     ; 录音指针增加2（已保存16位数据）
     add si, 2
+    cmp si, 210
+    jnz mod_recorder_pressed_data_full
     ; 保存录音指针
     mov cx, si
     mov recorder_head, cl
@@ -1239,6 +1242,15 @@ mod_recorder_pressed proc
     ; 保存本次时间
     mov dx, systick_time
     mov recorder_last_time, dx
+    jmp mod_recorder_pressed_return
+
+    mod_recorder_pressed_data_full:
+        sub si, 2
+    	mov recorder_data[si], 0        ; 上一个字写结束标识
+    	mov recorder_head, 0
+    	mov recorder_last_time, 0
+        mov current_mode, 1             ; 切换模式
+        call seg_display_piano
 
     mod_recorder_pressed_return:
         pop dx
